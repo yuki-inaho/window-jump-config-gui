@@ -1,0 +1,23 @@
+# Rust build output
+/target/
+
+# Local scratch data and smoke-test config
+/temp/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*~
+
+# Environment overrides
+.env
+.env.*
+
+# Editor and OS metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
