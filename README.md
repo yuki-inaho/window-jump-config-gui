@@ -4,6 +4,14 @@ Ubuntu GNOME の X11 セッション向けのウィンドウジャンプツー�
 
 `window-jump-config-gui` で slot 1..9 にウィンドウの再発見ルールを登録し、`window-jump activate N` で対象ウィンドウを前面化します。保存するのは window id ではなく、主に `WM_CLASS` と `title_contains` です。
 
+## 関連ドキュメント
+
+通常利用はこの README だけで足ります。詳しく確認したい場合は次も見てください。
+
+| 名前 | リンク | 立ち位置 |
+| --- | --- | --- |
+| LLMオンボーディングサマリー | [docs/ONBOARDING.md](docs/ONBOARDING.md) | 新規LLMエージェント向けの確認順序・重要制約・運用メモ |
+
 ## 前提
 
 ```bash
@@ -17,6 +25,12 @@ command -v xdotool
 ```bash
 sudo apt update
 sudo apt install -y wmctrl xdotool
+```
+
+ソースからGUIをビルドする環境で xcb 系の開発パッケージが足りない場合は、次も入れます。
+
+```bash
+sudo apt install -y libxcb-shape0-dev libxcb-xfixes0-dev
 ```
 
 Rust と `cargo` も必要です。`justfile` を使う場合は `just` も導入してください。
