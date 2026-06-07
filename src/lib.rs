@@ -994,7 +994,7 @@ impl WindowJumpApp {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Window Jump");
                 ui.separator();
-                ui.label("X11 slot-based window selector");
+                ui.label("Activates X11 top-level windows, not terminal tabs");
                 ui.separator();
                 ui.label(format!(
                     "X11: {}",
@@ -1163,7 +1163,7 @@ impl WindowJumpApp {
             self.draft_rule = self.slot_rule(slot);
         }
 
-        ui.label("Label");
+        ui.label("Label (human-facing slot name)");
         self.draft_dirty |= ui
             .text_edit_singleline(&mut self.draft_rule.label)
             .changed();
@@ -1173,10 +1173,14 @@ impl WindowJumpApp {
             .text_edit_singleline(&mut self.draft_rule.wm_class)
             .changed();
 
-        ui.label("Title contains (case-insensitive substring)");
+        ui.label("Title contains (rediscovery filter)");
         self.draft_dirty |= ui
             .text_edit_singleline(&mut self.draft_rule.title_contains)
             .changed();
+        ui.small(
+            "Case-insensitive substring. For terminal/Codex/Claude Code, keep short or empty; \
+             live last_window_id helps while the same X11 window is alive.",
+        );
         if let Some(warning) = title_contains_warning(&self.draft_rule.title_contains) {
             ui.small(RichText::new(warning).color(egui::Color32::YELLOW));
         }
@@ -1354,11 +1358,15 @@ impl WindowJumpApp {
                 ));
 
                 ui.add_space(4.0);
-                ui.label("Label");
+                ui.label("Label (human-facing slot name)");
                 ui.text_edit_singleline(&mut candidate.label);
 
-                ui.label("Title contains");
+                ui.label("Title contains (rediscovery filter)");
                 ui.text_edit_singleline(&mut candidate.title_contains);
+                ui.small(
+                    "For terminal/Codex/Claude Code, keep short or empty; live last_window_id \
+                     helps while the same X11 window is alive.",
+                );
                 if let Some(warning) = title_contains_warning(&candidate.title_contains) {
                     ui.small(RichText::new(warning).color(egui::Color32::YELLOW));
                 }
@@ -1698,6 +1706,19 @@ fn resolve_slot<'a>(
 ) -> Result<&'a WindowInfo> {
     if !rule.is_usable() {
         bail!("WM_CLASS が未設定です");
+    }
+
+    if let Some(last_window_id) = state.and_then(|state| state.last_window_id.as_ref()) {
+        let same_live_id: Vec<&WindowInfo> = windows
+            .iter()
+            .filter(|window| {
+                window.id_hex.eq_ignore_ascii_case(last_window_id)
+                    && window.wm_class == rule.wm_class
+            })
+            .collect();
+        if same_live_id.len() == 1 {
+            return Ok(same_live_id[0]);
+        }
     }
 
     let candidates: Vec<&WindowInfo> = windows
@@ -2285,6 +2306,75 @@ mod tests {
     }
 
     #[test]
+    fn resolve_slot_prefers_live_last_window_id_before_title_filter() {
+        let rule = SlotRule {
+            wm_class: "Terminal.Terminal".to_string(),
+            title_contains: "codex plan".to_string(),
+            ..Default::default()
+        };
+        let state = SlotState {
+            last_window_id: Some("0x2".to_string()),
+            ..Default::default()
+        };
+        let old_title_match = test_window(1, 0, "Terminal.Terminal", "codex plan - old shell");
+        let live_same_window = test_window(2, 0, "Terminal.Terminal", "cargo test output");
+        let windows = vec![old_title_match, live_same_window];
+
+        assert!(!rule_matches(&rule, &windows[1]));
+        let resolved = resolve_slot(&rule, Some(&state), &windows).unwrap();
+        assert_eq!(resolved.id, 2);
+    }
+
+    #[test]
+    fn resolve_slot_does_not_use_last_window_id_when_class_differs() {
+        let rule = SlotRule {
+            wm_class: "Terminal.Terminal".to_string(),
+            title_contains: "server".to_string(),
+            ..Default::default()
+        };
+        let state = SlotState {
+            last_window_id: Some("0x2".to_string()),
+            ..Default::default()
+        };
+        let valid_title_match = test_window(1, 0, "Terminal.Terminal", "api-server");
+        let live_different_class = test_window(2, 0, "Navigator.Firefox", "api-server");
+        let windows = vec![valid_title_match, live_different_class];
+
+        assert!(windows[1]
+            .id_hex
+            .eq_ignore_ascii_case(state.last_window_id.as_deref().unwrap()));
+        assert_ne!(windows[1].wm_class, rule.wm_class);
+        let resolved = resolve_slot(&rule, Some(&state), &windows).unwrap();
+        assert_eq!(resolved.id, 1);
+    }
+
+    #[test]
+    fn resolve_slot_falls_back_to_title_rule_when_last_window_id_is_missing() {
+        let rule = SlotRule {
+            wm_class: "Terminal.Terminal".to_string(),
+            title_contains: "server".to_string(),
+            ..Default::default()
+        };
+        let missing_id_state = SlotState {
+            last_window_id: Some("0xdeadbeef".to_string()),
+            ..Default::default()
+        };
+        let no_id_state = SlotState::default();
+        let windows = vec![
+            test_window(1, 0, "Terminal.Terminal", "cargo test output"),
+            test_window(2, 0, "Terminal.Terminal", "api-server"),
+            test_window(3, 0, "Navigator.Firefox", "api-server"),
+        ];
+
+        let resolved_with_missing_id =
+            resolve_slot(&rule, Some(&missing_id_state), &windows).unwrap();
+        let resolved_without_id = resolve_slot(&rule, Some(&no_id_state), &windows).unwrap();
+
+        assert_eq!(resolved_with_missing_id.id, 2);
+        assert_eq!(resolved_without_id.id, 2);
+    }
+
+    #[test]
     fn resolve_slot_uses_last_window_id_as_tie_breaker() {
         let rule = SlotRule {
             wm_class: "Terminal.Terminal".to_string(),
@@ -2360,6 +2450,29 @@ mod tests {
             suggest_title_contains(&target, &[target.clone(), other]),
             "stem_split_postprocess_theory_spec_mapping"
         );
+    }
+
+    #[test]
+    fn existing_config_without_new_fields_still_loads() {
+        let raw = r#"{
+          "version": 1,
+          "slots": {
+            "1": {
+              "label": "Mail",
+              "wm_class": "Navigator.Firefox",
+              "title_contains": "Inbox",
+              "notes": "daily mailbox"
+            }
+          }
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(raw).unwrap();
+        let rule = config.slots.get(&1).unwrap();
+        assert_eq!(config.version, 1);
+        assert_eq!(rule.label, "Mail");
+        assert_eq!(rule.wm_class, "Navigator.Firefox");
+        assert_eq!(rule.title_contains, "Inbox");
+        assert_eq!(rule.notes, "daily mailbox");
     }
 
     #[test]
